@@ -1,9 +1,8 @@
 import os
 import numpy as np
-from tree_sitter import Language, Parser
-import tree_sitter_python
 from transformers import AutoTokenizer
 import graphviz
+import ast
 
 # --- Configuration ---
     # Example code snippet to analyze
@@ -21,9 +20,12 @@ MAX = 20
 foo(x, MAX)
 """
 
-# 1. Initialize the tree-sitter parser for Python
-PYTHON_LANGUAGE = Language(tree_sitter_python.language())
-parser = Parser(PYTHON_LANGUAGE)
+def _get_line_offsets(code_string: str) -> list[int]:
+    """Computes the starting character offset of each line in the code."""
+    line_offsets = [0]
+    for line in code_string.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line))
+    return line_offsets
 
 # --- Core Implementation ---
 
@@ -48,26 +50,41 @@ def find_best_matching_token(node_span, tokens, offset_mapping):
     # return best_match_token.replace('Ġ', ' ').replace('Ċ', '\\n')
     return best_match_token
 
-def add_ast_nodes_edges(node, dot, tokens, offset_mapping):
+def add_ast_nodes_edges(node, dot, tokens, offset_mapping, code_string, line_offsets):
     """Recursively traverses the AST to build a Graphviz graph."""
     node_id = str(id(node))
     
-    if node.child_count == 0:  # This is a leaf node
-        node_span = (node.start_byte, node.end_byte)
-        token_text = find_best_matching_token(node_span, tokens, offset_mapping)    
-        # Create a label with both node type and matched token
-        # Escape special characters for Graphviz using backslash
-        node_label = f'{node.type}\n{token_text}\n{sample_code[node.start_byte:node.end_byte]}\n({node.start_byte},{node.end_byte})'
-        dot.node(node_id, label=node_label, shape='box', style='filled', fillcolor='lightblue')
+    # is_leaf = not any(ast.iter_child_nodes(node))
+
+    if all(hasattr(node, attr) for attr in ['lineno', 'end_lineno', 'col_offset', 'end_col_offset']):
+        try:
+            start_byte = line_offsets[node.lineno - 1] + node.col_offset
+            end_byte = line_offsets[node.end_lineno - 1] + node.end_col_offset
+            node_span = (start_byte, end_byte)
+            
+            token_text = find_best_matching_token(node_span, tokens, offset_mapping)
+            
+            # Using ast.get_source_segment is a robust way to get the node's text
+            node_text_from_code = ast.get_source_segment(code_string, node) or ""
+
+            # Escape special characters for Graphviz
+            node_label = f'{node.__class__.__name__}\\n{token_text}\\n"{node_text_from_code}"\\n({start_byte},{end_byte})'
+            dot.node(node_id, label=node_label, shape='box', style='filled', fillcolor='lightblue')
+        except (AttributeError, IndexError):
+            # Fallback for nodes without full position info
+            node_label = node.__class__.__name__
+            dot.node(node_id, label=node_label, shape='box', style='filled', fillcolor='lightgrey')
+
     else:  # This is an intermediate node
-        node_label = node.type
+        node_label = node.__class__.__name__
         dot.node(node_id, label=node_label, shape='ellipse')
         
     # Add edges to children and recurse
-    for child in node.children:
+    for child in ast.iter_child_nodes(node):
         child_id = str(id(child))
         dot.edge(node_id, child_id)
-        add_ast_nodes_edges(child, dot, tokens, offset_mapping)
+        add_ast_nodes_edges(child, dot, tokens, offset_mapping, code_string, line_offsets)
+
 
 def visualize_ast_with_tokens(code_string: str, tokenizer, output_filename="ast_with_tokens"):
     """
@@ -81,9 +98,12 @@ def visualize_ast_with_tokens(code_string: str, tokenizer, output_filename="ast_
     print(f"\n--- Visualizing AST and Token Mapping ---")
     
     # 1. Parse code to get the AST root
-    tree = parser.parse(bytes(code_string, "utf8"))
-    root_node = tree.root_node
-    
+    try:
+        root_node = ast.parse(code_string)
+    except SyntaxError as e:
+        print(f"Error parsing code: {e}")
+        return
+        
     # 2. Tokenize the code to get tokens and their character offsets
     if tokenizer.is_fast:
         encoding = tokenizer(code_string, return_offsets_mapping=True)
@@ -96,7 +116,8 @@ def visualize_ast_with_tokens(code_string: str, tokenizer, output_filename="ast_
     dot = graphviz.Digraph('AST', comment='Abstract Syntax Tree with Tokens')
     dot.attr(rankdir='TB')
 
-    add_ast_nodes_edges(root_node, dot, tokens, offset_mapping)
+    line_offsets = _get_line_offsets(code_string)
+    add_ast_nodes_edges(root_node, dot, tokens, offset_mapping, code_string, line_offsets)
 
     # 4. Render and save the graph to a file
     try:
@@ -104,7 +125,7 @@ def visualize_ast_with_tokens(code_string: str, tokenizer, output_filename="ast_
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             
-        dot.render(output_filename, format='png', view=False, cleanup=False)        
+        dot.render(output_filename, format='png', view=False, cleanup=True)
         print(f"AST visualization saved to '{output_filename}.png'")
     except Exception as e:
         print(f"\n--- Graphviz Error ---")
@@ -141,35 +162,44 @@ def get_offsets_for_slow_tokenizer(code_string: str, tokenizer):
 
 def find_max_depth(node, current_depth):
     """Recursively finds the maximum depth of the AST."""
-    if node.child_count == 0:
+    children = list(ast.iter_child_nodes(node))
+    if not children:
         return current_depth
     
     max_child_depth = current_depth
-    for child in node.children:
+    for child in children:
         child_depth = find_max_depth(child, current_depth + 1)
         if child_depth > max_child_depth:
             max_child_depth = child_depth
     
     return max_child_depth
 
-def apply_leaf_node_weights(node, char_weights_array, depth):
+def apply_leaf_node_weights(node, char_weights_array, depth, code_string, line_offsets):
     """
     Recursively traverses the AST, applying depth weight only to leaf nodes.
 
     Args:
-        node: The current tree-sitter AST node to process.
+        node: The current ast.AST node to process.
         char_weights_array (np.ndarray): A NumPy array to store weights for each character.
         depth (int): The current depth of the `node` in the AST.
+        code_string (str): The source code.
+        line_offsets (list[int]): Pre-calculated line offsets.
     """
     # Only leaf nodes (nodes with no children) assign their depth as a weight.
-    if node.child_count == 0:
-        start = node.start_byte
-        end = node.end_byte
-        char_weights_array[start:end] = depth
+    is_leaf = not any(ast.iter_child_nodes(node))
+    if is_leaf and hasattr(node, 'lineno'):
+        try:
+            start = line_offsets[node.lineno - 1] + node.col_offset
+            end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+            char_weights_array[start:end] = depth
+        except (AttributeError, IndexError):
+            # Some leaf nodes might not have position, we skip them
+            pass
     else:
         # Intermediate nodes just pass the traversal down to their children.
-        for child in node.children:
-            apply_leaf_node_weights(child, char_weights_array, depth + 1)
+        for child in ast.iter_child_nodes(node):
+            apply_leaf_node_weights(child, char_weights_array, depth + 1, code_string, line_offsets)
+
 
 def generate_token_weights_from_dag(code_string: str, tokenizer):
     """
@@ -186,8 +216,11 @@ def generate_token_weights_from_dag(code_string: str, tokenizer):
         - token_weights (list[float]): The final calculated order-weight for each token.
         - offset_mapping (list[tuple[int, int]]): The character offsets for each token.
     """
-    tree = parser.parse(bytes(code_string, "utf8"))
-    root_node = tree.root_node
+    try:
+        root_node = ast.parse(code_string)
+    except SyntaxError as e:
+        print(f"Error parsing code, cannot generate token weights: {e}")
+        return [], [], [], []
     
     # 1. Find the maximum depth of the entire tree.
     max_depth = find_max_depth(root_node, current_depth=1)
@@ -198,7 +231,8 @@ def generate_token_weights_from_dag(code_string: str, tokenizer):
     char_weights = np.full(len(code_string), penalty_weight, dtype=float)
     
     # 3. Apply weights only from leaf nodes.
-    apply_leaf_node_weights(root_node, char_weights, depth=1)
+    line_offsets = _get_line_offsets(code_string)
+    apply_leaf_node_weights(root_node, char_weights, depth=1, code_string=code_string, line_offsets=line_offsets)
     
     # Apply maximum depth weight to all whitespace characters (spaces and newlines)
     # Apply maximum depth weight to consecutive whitespace characters (3 or more)
@@ -275,5 +309,5 @@ if __name__ == "__main__":
     visualize_ast_with_tokens(
         sample_code, 
         tokenizer, 
-        output_filename="ast_visualizations/ast_with_tokens"
+        output_filename="ast_visualizations/ast_with_tokens_AST"
     )

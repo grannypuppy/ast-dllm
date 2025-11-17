@@ -6,7 +6,6 @@ import ast
 from collections import deque
 import logging
 import graphviz
-import html
 
 
 # --- Configuration ---
