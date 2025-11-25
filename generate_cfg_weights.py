@@ -58,6 +58,28 @@ def process_dataset(input_path: str, tokenizer):
                         # 3. Add new fields for tokens and their normalized weights
                         data['input_tokens'] = tokens
                         data['input_token_weights'] = weights
+
+                    target_code = data.get('target')
+                    if target_code and isinstance(target_code, str):
+                        # 1. Get raw depth values from cfg_dag.py
+                        tokens, _, depths, _ = generate_token_weights_from_cfg_dag(target_code, tokenizer)
+                        
+                        # 2. Perform normalization (same as generate_weights.py)
+                        if depths:
+                            depths_array = np.array(depths, dtype=float)
+                            
+                            max_depth = np.max(depths_array)
+
+                            # Invert: Higher importance (lower depth) gets a higher score.
+                            inverted_depths = (1 + max_depth - depths_array) / (1 + max_depth)
+                            
+                            weights = np.log(inverted_depths+np.e-1).tolist()
+                        else:
+                            weights = []
+                        
+                        # 3. Add new fields for tokens and their normalized weights
+                        data['target_tokens'] = tokens
+                        data['target_token_weights'] = weights
                     
                     # Write the updated data to the output file
                     outfile.write(json.dumps(data) + '\n')
@@ -79,13 +101,13 @@ if __name__ == "__main__":
     parser.add_argument(
         '--files', 
         nargs='+', 
-        default=['python_splits/train.jsonl', 'python_splits/test.jsonl'],
+        default=['datasets/python_splits/train_verified.jsonl', 'datasets/python_splits/test_input_verified_baseline.jsonl'],
         help="List of .jsonl files to process."
     )
     parser.add_argument(
         '--model_path', 
         type=str, 
-        default="./local_models/diffucoder",
+        default="../dLLM-RL/local_models/dream-7b-base",
         help="Path to the Hugging Face tokenizer model."
     )
     args = parser.parse_args()

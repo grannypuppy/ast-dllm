@@ -101,7 +101,7 @@ class PySandBox:
 
         return results
 
-    def run_python_code(self, code: str, testcases: List[Dict], py_file_path = None, parallel: bool = True) -> List[RunResult]:
+    def run_python_code(self, code: str, testcases: List[Dict], py_file_path = None, time_out: int = 10, parallel: bool = True) -> List[RunResult]:
         if py_file_path is None:
             pid = os.getpid()
             py_file_path = os.path.join(self.tmp_dir, f"{pid}.py")
@@ -118,14 +118,14 @@ class PySandBox:
              return [RunResult(compilation_error=e.output.decode())]
 
         try:
-            return self.execute_python_code(py_file_path, testcases, parallel=parallel)
+            return self.execute_python_code(py_file_path, testcases, time_out=time_out, parallel=parallel)
         except Exception as execution_stderr:
             return [RunResult(compilation_error=False, execution_error=str(execution_stderr))]
 
     def get_testcases(self, problem_id: str) -> List[Dict]:
         # Reusing the logic from SandBox since testcase format is likely shared
-        # testcase_dir = os.path.join("data/codenet/merged_test_cases", problem_id)
-        testcase_dir = os.path.join("data/codenet/public_test_cases", problem_id)
+        # testcase_dir = os.path.join("datasets/codenet/merged_test_cases", problem_id)
+        testcase_dir = os.path.join("datasets/codenet/public_test_cases", problem_id)
         testcases = []
         if os.path.exists(testcase_dir):
             for input_file in os.listdir(testcase_dir):

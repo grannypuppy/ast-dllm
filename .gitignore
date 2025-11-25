@@ -2,6 +2,7 @@ ast_graphs/
 cfg_graphs
 local_models
 data
+datasets
 __pycache__
 visualizations
 ast_visualizations
@@ -10,3 +11,4 @@ cpg_visualizations
 jsonl_samples
 temp_utils
 temp
+results

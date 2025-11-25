@@ -77,7 +77,8 @@ class Evaluator:
             completion_results = self.sandbox.run_python_code(
                 code=code,
                 testcases=testcases,
-                py_file_path=py_file_path
+                py_file_path=py_file_path,
+                time_out=15
             )
             
             # Summarize results
