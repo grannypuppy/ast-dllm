@@ -16,15 +16,21 @@ def load_jsonl(file_path):
 
 def get_metrics(result_entry):
     """
-    Extract correctness and runtime from a single result entry.
+    Extract correctness, runtime, and compilation status from a single result entry.
+    Returns: (correctness, runtime, compiled)
     """
     overview = result_entry.get("completion_results_overview", {})
     if not overview:
-        return False, float('inf')
+        return False, float('inf'), False
     
     correctness = overview.get("correctness", False)
     if isinstance(correctness, str):
         correctness = correctness.lower() == 'true'
+    
+    compilation_error = overview.get("compilation_error", False)
+    if isinstance(compilation_error, str):
+        compilation_error = compilation_error.lower() == 'true'
+    compiled = not compilation_error
     
     # Try to get runtime, could be 'avg_run_time' or just 'runtime' depending on format variations
     runtime = overview.get("avg_run_time")
@@ -33,7 +39,7 @@ def get_metrics(result_entry):
     if runtime is None:
         runtime = float('inf')
         
-    return correctness, float(runtime)
+    return correctness, float(runtime), compiled
 
 def geometric_mean(data):
     """
@@ -105,7 +111,7 @@ def analyze_results(baseline_file, target_file):
         
         if base_eval_results:
             # Assume first result is the baseline reference
-            base_correct, base_runtime = get_metrics(base_eval_results[0])
+            base_correct, base_runtime, _ = get_metrics(base_eval_results[0])
             
         # 2. Process Target Row
         target_eval_results = target_entry.get("eval_results", [])
@@ -113,7 +119,7 @@ def analyze_results(baseline_file, target_file):
         # Collect metrics for all samples for this row
         row_samples_metrics = []
         for res in target_eval_results:
-            correct, runtime = get_metrics(res)
+            correct, runtime, compiled = get_metrics(res)
             
             speedup = 0.0
             # Calculate speedup only if both are correct and valid runtimes exist
@@ -123,6 +129,7 @@ def analyze_results(baseline_file, target_file):
             row_samples_metrics.append({
                 "correct": correct,
                 "runtime": runtime,
+                "compiled": compiled,
                 "speedup": speedup
             })
             
@@ -134,8 +141,16 @@ def analyze_results(baseline_file, target_file):
 
     # 3. Compute Aggregates for the single detected k
     
-    pass_counts = 0
+    pass_counts = 0 # This acts as Pass Best@k count
     
+    # Trackers for Pass (Avg@k)
+    # Sum of probabilities (fraction correct per problem)
+    sum_pass_avg = 0.0
+    
+    # Trackers for Compilation
+    compilation_best_counts = 0
+    sum_compilation_avg = 0.0
+
     # Speedup lists for aggregation (Geometric Mean)
     # We collect the BEST speedup for each solved row (in top k)
     best_speedups = [] 
@@ -155,8 +170,21 @@ def analyze_results(baseline_file, target_file):
     for samples in metrics_all_rows:
         # Use all available samples since k is uniform
         k_samples = samples
+        current_k = len(k_samples)
+        if current_k == 0:
+            continue
+            
+        # --- Compilation Stats ---
+        # Best@k: Did any compile?
+        if any(s["compiled"] for s in k_samples):
+            compilation_best_counts += 1
         
-        # Correctness (Pass@k): Is ANY sample correct?
+        # Avg@k: Fraction compiled
+        num_compiled = sum(1 for s in k_samples if s["compiled"])
+        sum_compilation_avg += (num_compiled / current_k)
+
+        # --- Correctness (Pass@k) Stats ---
+        # Best@k: Is ANY sample correct?
         if any(s["correct"] for s in k_samples):
             pass_counts += 1
             
@@ -189,9 +217,25 @@ def analyze_results(baseline_file, target_file):
                     count_avg_gt_1_1 += 1
                 if avg_s > 1.5:
                     count_avg_gt_1_5 += 1
+        
+        # Avg@k: Fraction correct
+        num_correct = sum(1 for s in k_samples if s["correct"])
+        sum_pass_avg += (num_correct / current_k)
     
     total_rows = len(metrics_all_rows)
-    pass_rate = (pass_counts / total_rows * 100) if total_rows > 0 else 0.0
+    
+    # Calculate Rates
+    if total_rows > 0:
+        pass_best_rate = (pass_counts / total_rows * 100)
+        pass_avg_rate = (sum_pass_avg / total_rows * 100)
+        
+        compilation_best_rate = (compilation_best_counts / total_rows * 100)
+        compilation_avg_rate = (sum_compilation_avg / total_rows * 100)
+    else:
+        pass_best_rate = 0.0
+        pass_avg_rate = 0.0
+        compilation_best_rate = 0.0
+        compilation_avg_rate = 0.0
     
     # Calculate percentages for thresholds
     def calc_pct(count, total):
@@ -211,7 +255,13 @@ def analyze_results(baseline_file, target_file):
     # Custom vertical output format
     print("\nEvaluation Analysis Results:")
     print("=" * 40)
-    print(f"Pass@{k}: {pass_rate:.2f}%")
+    print(f"Compilation Rate (%):")
+    print(f"  Best@{k}: {compilation_best_rate:.2f}%")
+    print(f"  Avg@{k}:  {compilation_avg_rate:.2f}%")
+    print("-" * 40)
+    print(f"Pass@{k} (%):")
+    print(f"  Best@{k}: {pass_best_rate:.2f}%")
+    print(f"  Avg@{k}:  {pass_avg_rate:.2f}%")
     print("-" * 40)
     print(f"GMean Speedup:")
     print(f"  Best@{k}: {gmean_best:.4f}")

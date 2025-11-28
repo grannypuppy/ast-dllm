@@ -20,12 +20,23 @@ class BenchmarkGenerator:
     def __init__(self, 
                  model_path: str, 
                  output_dir: str,
-                 test_data_path: str = "data/python_splits/test_verified.jsonl",
-                 device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+                 test_data_path: str = "data/python_splits/test_input_verified_baseline.jsonl"):
         self.model_path = model_path
         self.output_dir = output_dir
         self.test_data_path = test_data_path
-        self.device = device
+        
+        # Distributed setup
+        self.rank = int(os.environ.get("RANK", 0))
+        self.world_size = int(os.environ.get("WORLD_SIZE", 1))
+        self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.local_rank)
+            self.device = f"cuda:{self.local_rank}"
+        else:
+            self.device = "cpu"
+            
+        logger.info(f"Initialized Generator on Rank {self.rank}/{self.world_size} (Local: {self.local_rank}), Device: {self.device}")
         
         # Prompt Template from datasets/prepare_py_for_dllm_sft.py
         # Using 'input' from dataset mapped to 'src_code' in template
@@ -85,13 +96,19 @@ class BenchmarkGenerator:
             logger.error(f"Error reading test data: {e}")
             return
 
-        # data = data[:10]
+        data = data[:100]
+
+        # Split data for distributed execution
+        if self.world_size > 1:
+            total_samples = len(data)
+            data = data[self.rank::self.world_size]
+            logger.info(f"Rank {self.rank}: Processing {len(data)}/{total_samples} samples")
 
         os.makedirs(self.output_dir, exist_ok=True)
         
         results = []
         
-        for i, record in enumerate(tqdm(data, desc="Generating")):
+        for i, record in enumerate(tqdm(data, desc=f"Generating (Rank {self.rank})")):
             problem_id = record.get("problem_id")
             # Handle input field name variations: check 'input' first, then 'src_code'
             src_code = record.get("input") or record.get("src_code")
@@ -164,10 +181,10 @@ class BenchmarkGenerator:
 
             # Periodic save
             if (i + 1) % 10 == 0:
-                 self._save_results(results, "generation_results_partial.jsonl")
+                 self._save_results(results, f"generation_results_rank{self.rank}_partial.jsonl")
 
         # Final save
-        self._save_results(results, "generation_results.jsonl")
+        self._save_results(results, f"generation_results_rank{self.rank}.jsonl")
         
     def _save_results(self, results, filename):
         filepath = os.path.join(self.output_dir, filename)

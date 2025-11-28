@@ -2,9 +2,9 @@ import os
 from eval.evaluator import Evaluator
 
 # 1. 定义文件路径
-input_file = "results/sft_dream_py_len512_steps512/generation_results_processed.jsonl"
+input_file = "results/sft_dream_py-official_len512_steps512_ckpt50/generation_results_processed.jsonl"
 output_dir = "results"
-run_name = "sft_dream_py_len512_steps512"
+run_name = "sft_dream_py-official_len512_steps512_ckpt50"
 
 # 2. 检查输入文件是否存在
 if not os.path.exists(input_file):
