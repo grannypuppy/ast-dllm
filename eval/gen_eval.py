@@ -146,6 +146,7 @@ class BenchmarkGenerator:
                     "dual_cache": dual_cache,
                     "block_length": block_size if use_cache else None,
                     "threshold": threshold,
+                    "tokenizer": self.tokenizer,
                 }
                 if threshold is not None:
                     gen_kwargs["alg"] = "confidence_threshold"

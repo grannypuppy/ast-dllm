@@ -242,6 +242,52 @@ def generate_token_weights_from_dag(code_string: str, tokenizer):
         
     return tokens, token_ids, token_weights, offset_mapping
 
+def generate_char_weights_from_dag(code_string: str):
+    """
+    Generates an order-weight for each token based on the code's AST leaf node depth.
+
+    Args:
+        code_string (str): The input Python code snippet to analyze.
+        tokenizer: An initialized Hugging Face tokenizer (fast or slow).
+
+    Returns:
+        A tuple containing:
+        - tokens (list[str]): The list of generated token strings.
+        - token_ids (list[int]): The list of corresponding token IDs.
+        - token_weights (list[float]): The final calculated order-weight for each token.
+        - offset_mapping (list[tuple[int, int]]): The character offsets for each token.
+    """
+    tree = parser.parse(bytes(code_string, "utf8"))
+    root_node = tree.root_node
+    
+    # 1. Find the maximum depth of the entire tree.
+    max_depth = find_max_depth(root_node, current_depth=1)
+    
+    # 2. Create a char-level weight array, initialized with a penalty weight.
+    # This high value signifies the lowest priority for non-leaf characters.
+    penalty_weight = max_depth + 1
+    char_weights = np.full(len(code_string), penalty_weight, dtype=float)
+    
+    # 3. Apply weights only from leaf nodes.
+    apply_leaf_node_weights(root_node, char_weights, depth=1)
+    
+    # Apply maximum depth weight to all whitespace characters (spaces and newlines)
+    # Apply maximum depth weight to consecutive whitespace characters (3 or more)
+    i = 0
+    while i < len(code_string):
+        if code_string[i] in (' ', '\n', '\t', '\r'):
+            # Found a whitespace character, check if there are consecutive ones
+            start = i
+            while i < len(code_string) and code_string[i] in (' ', '\n', '\t', '\r'):
+                i += 1
+            # If we have 3 or more consecutive whitespace characters
+            if i - start >= 3:
+                char_weights[start:i] = penalty_weight
+        else:
+            i += 1
+        
+    return char_weights
+
 # --- Demonstration ---
 
 if __name__ == "__main__":
