@@ -49,36 +49,23 @@ except ImportError as e:
     generate_char_weights_from_dag = None
 
 def extract_code_from_output(output: str) -> str:
-    """
-    Post-process tool to extract Python code from model output.
-    
-    This function implements the following logic requested by the user:
-    1. Prepend "```python" to the output (reconstructing the prompt context).
-    2. Extract the content between "```python" and the next "```".
-    3. Return the extracted code.
-    
-    Args:
-        output (str): The raw output string from the model (e.g., completion starting after ```python).
-        
-    Returns:
-        str: The extracted and stripped Python code.
-    """
+
     if not output:
         return ""
-    
-    # 2. Extract content between ```python and the next ```
-    # re.DOTALL allows . to match newlines
-    pattern = r"```python(.*?)```"
-    match = re.search(pattern, output, re.DOTALL)
-    
-    if match:
-        code = match.group(1)
-    else:
 
-        logger.warning(f"Could not extract code block from output starting with: {output}...")
+    start_tag = "```python"
+    start_idx = output.find(start_tag)
+    if start_idx == -1:
+        logger.warning(f"Could not find ```python block in output")
         return ""
-        
-    # 3. Return the stripped code
+
+    start_idx += len(start_tag)
+    end_idx = output.find("```", start_idx)
+    if end_idx == -1:
+        code = output[start_idx:]
+    else:
+        code = output[start_idx:end_idx]
+
     return code.strip()
 
 
@@ -502,9 +489,9 @@ class DreamGenerationMixin:
                         full_text = tokenizer.decode(x_temp[0], skip_special_tokens=True)
                         prompt_len = input_ids.shape[1]
                         generated_text = tokenizer.decode(x_temp[0][prompt_len:], skip_special_tokens=True)
-                        logger.info(f"full_text: {full_text}")
+                        logger.info(f"full_text: {full_text}\n")
                         code_text = extract_code_from_output(generated_text)
-                        logger.info(f"code_text: {code_text}")
+                        logger.info(f"code_text: {code_text}\n")
                         
                         if code_text:
                             logger.info("Enter if code_text")
@@ -522,7 +509,9 @@ class DreamGenerationMixin:
                                 
                                 # 2. Find where the code_text is located inside full_text
                                 # We search for the exact string match of code_text within full_text
-                                start_idx = full_text.find(code_text)
+                                # Use relative coordinates for generation part only
+                                full_text_reconstructed = ""
+                                start_idx = generated_text.find(code_text)
                                 
                                 if start_idx != -1:
                                     logger.info("Enter if start_idx != -1")
@@ -537,16 +526,15 @@ class DreamGenerationMixin:
                                     # mask_index[0] corresponds to the original x_temp[0] indices.
                                     # We need to map: Original_Index -> Char_Span_In_Full_Text
                                     
-                                    full_text_reconstructed = ""
-                                    
                                     # Mask indices for the single batch item
                                     current_mask_indices = torch.nonzero(mask_index[0]).squeeze(-1) # Indices in L
                                     
                                     # Pre-calculate confidence mean
                                     mean_conf = confidence.mean()
 
-                                    # Iterate through all tokens in the sequence
-                                    for token_idx, token_id in enumerate(token_ids_list):
+                                    # Iterate through generation tokens only
+                                    for j, token_id in enumerate(token_ids_list[prompt_len:]):
+                                        token_idx = prompt_len + j
                                         
                                         # Decode single token to get its text representation
                                         # Note: This is slow if loop is long. 
@@ -564,7 +552,7 @@ class DreamGenerationMixin:
                                         overlap_end = min(tok_end, end_idx)
                                         
                                         if overlap_start < overlap_end:
-                                            logger.info(f"find token part of the code: {full_text_reconstructed[overlap_start:overlap_end]}")
+                                            # logger.info(f"find token part of the code: {full_text_reconstructed[overlap_start:overlap_end]}")
                                             # This token is part of the code!
                                             # Check if it was a Masked token
                                             if token_idx in current_mask_indices:
@@ -573,7 +561,7 @@ class DreamGenerationMixin:
                                                 # Map global char indices to local code_text indices
                                                 local_start = overlap_start - start_idx
                                                 local_end = overlap_end - start_idx
-                                                logger.info(f"local_start: {local_start}, local_end: {local_end}\ncode_text: {code_text[local_start:local_end]}")
+                                                # logger.info(f"local_start: {local_start}, local_end: {local_end}\ncode_text: {code_text[local_start:local_end]}")
                                                 relevant_weights = inverted_depths[local_start:local_end]
                                                 if len(relevant_weights) > 0:
                                                     token_weight = np.max(relevant_weights)
@@ -633,26 +621,27 @@ class DreamGenerationMixin:
                             full_text = tokenizer.decode(x_temp[b], skip_special_tokens=True)
                             prompt_len = input_ids.shape[1]
                             generated_text = tokenizer.decode(x_temp[b][prompt_len:], skip_special_tokens=True)
-                            logger.info(f"full_text: {full_text}")
+                            # logger.info(f"full_text: {full_text}")
                             code_text = extract_code_from_output(generated_text)
-                            logger.info(f"code_text: {code_text}")
+                            # logger.info(f"code_text: {code_text}")
                             
                             if code_text:
-                                logger.info("Enter if code_text")
+                                #logger.info("Enter if code_text")
                                 raw_char_weights = generate_char_weights_from_dag(code_text)
-                                logger.info(f"raw_char_weights: {raw_char_weights}")
+                                # logger.info(f"raw_char_weights: {raw_char_weights}")
                                 if raw_char_weights is not None:
                                     depths_array = np.array(raw_char_weights, dtype=float)
                                     max_depth = np.max(depths_array)
                                     inverted_depths = (1 + max_depth - depths_array) / (1 + max_depth)
                                     
-                                    start_idx = full_text.find(code_text)
+                                    # Use relative coordinates for generation part only
+                                    full_text_reconstructed = ""
+                                    start_idx = generated_text.find(code_text)
                                     if start_idx != -1:
-                                        logger.info("Enter if start_idx != -1")
+                                        # logger.info("Enter if start_idx != -1")
                                         end_idx = start_idx + len(code_text)
                                         token_ids_list = x_temp[b].tolist()
                                         
-                                        full_text_reconstructed = ""
                                         b_mask = mask_index[b] # [L]
                                         current_mask_indices = torch.nonzero(b_mask).squeeze(-1)
                                         
@@ -661,7 +650,8 @@ class DreamGenerationMixin:
                                         offset = mask_index[:b].sum().item()
                                         mean_conf = confidence.mean()
 
-                                        for token_idx, token_id in enumerate(token_ids_list):
+                                        for j, token_id in enumerate(token_ids_list[prompt_len:]):
+                                            token_idx = prompt_len + j
                                             token_str = tokenizer.decode([token_id])
                                             tok_start = len(full_text_reconstructed)
                                             tok_end = tok_start + len(token_str)
@@ -673,10 +663,10 @@ class DreamGenerationMixin:
                                             if overlap_start < overlap_end:
                                                 # logger.info("Enter if overlap_start < overlap_end")
                                                 if token_idx in current_mask_indices:
-                                                    logger.warning("Enter if token_idx in current_mask_indices")
+                                                    # logger.warning("Enter if token_idx in current_mask_indices")
                                                     local_start = overlap_start - start_idx
                                                     local_end = overlap_end - start_idx
-                                                    logger.warning(f"local_start: {local_start}, local_end: {local_end}\ncode_text: {code_text[local_start:local_end]}")
+                                                    # logger.warning(f"local_start: {local_start}, local_end: {local_end}\ncode_token: {code_text[local_start:local_end]}")
                                                     relevant_weights = inverted_depths[local_start:local_end]
                                                     if len(relevant_weights) > 0:
                                                         token_weight = np.max(relevant_weights)
